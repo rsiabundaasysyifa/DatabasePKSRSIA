@@ -1,0 +1,6 @@
+{
+  "name": "SISTEM DATABASE PKS - RSIA BUNDA ASY-SYIFA",
+  "description": "Sistem Pengelolaan & Monitoring Database Perjanjian Kerja Sama (PKS) RSIA Bunda Asy-Syifa dengan Asuransi dan Rekanan Kesehatan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
