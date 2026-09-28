@@ -1,0 +1,315 @@
+============================================================================
+DOKUMENTASI ARSITEKTUR BACKEND & FLOWCHART SISTEM PKS
+RSIA BUNDA ASY-SYIFA
+============================================================================
+
+Dokumen ini ditujukan kepada programmer / tim backend developer untuk membangun
+layanan API (Node.js/Express, PHP/Laravel, Golang, atau Python) yang terhubung 
+dengan basis data MySQL dan frontend aplikasi manajemen PKS RSIA Bunda Asy-Syifa.
+
+============================================================================
+DAFTAR ISI
+============================================================================
+1. Arsitektur Umum Sistem
+2. Flowchart 1: Pendaftaran / Tambah PKS Baru
+3. Flowchart 2: Logika Penentuan Status PKS & Peringatan H-Bulan
+4. Flowchart 3: Logika Perhitungan Total Kerja Sama Perusahaan
+5. Flowchart 4: Pencatatan Addendum / Amandemen / Perpanjangan
+6. Diagram Alur (Mermaid Format - Siap Render di Live Editor)
+7. Spesifikasi REST API Endpoints
+8. Panduan File Upload & Validasi Dokumen
+9. Rekomendasi Background Job / Cron Job Notifikasi
+
+============================================================================
+1. ARSITEKTUR UMUM SISTEM
+============================================================================
+
+[ FRONTEND REACT / WEB ]
+         |
+         | (HTTP / REST API - JSON + Multipart Form Data)
+         v
+[ API GATEWAY / BACKEND SERVER (Node.js/Laravel/FastAPI) ]
+    |                    |                         |
+    v                    v                         v
+[ Auth Middleware ]   [ Business Logic ]     [ Multer / File Storage ]
+    |                    |                   (Menyimpan PDF/Docx di /uploads)
+    |                    v
+    +-------------> [ MySQL / MariaDB ]
+                    - tb_pks (Induk)
+                    - tb_pks_riwayat (Addendum/Amandemen)
+
+============================================================================
+2. FLOWCHART 1: PENDAFTARAN / INPUT PKS BARU
+============================================================================
+
+   +------------------------+
+   |   Mulai Input PKS      |
+   +------------------------+
+                |
+                v
+   +------------------------+
+   | User Mengisi Data:     |
+   | - Nomor PKS (Wajib)    |
+   | - Nama Rekanan (Wajib) |
+   | - Judul & Tgl Berlaku  |
+   +------------------------+
+                |
+                v
+   +------------------------+
+   | Pilih Status           |
+   | Perpanjangan           |
+   +------------------------+
+        |             |
+        |             +---> [ Peringatan H-Bulan ] ---> [ Munculkan Input Bulan (1-6) ]
+        |
+        v
+   +------------------------+
+   | Pilih Ketersediaan     |
+   | Berkas PKS             |
+   +------------------------+
+        |
+        +---> [ Ada Soft File ] --------> [ Upload File PDF / Word ]
+        |
+        +---> [ Hard File (Fisik) ] ----> [ Input Teks Lokasi Arsip Fisik ]
+        |
+        +---> [ Tidak Ada Sama Sekali ]-> [ Input Teks Catatan Follow Up ]
+        |
+        v
+   +------------------------+
+   | Pilih Saluran Kontak   |
+   | PIC (WhatsApp / Kantor)|
+   +------------------------+
+                |
+                v
+   +------------------------+
+   | Klik Simpan Data       |
+   +------------------------+
+                |
+                v
+         [ Validasi Backend ]
+           /              \
+       (Gagal)          (Lolos)
+          |                |
+          v                +---> Upload file ke server storage
+   [ Kembalikan Error ]    +---> Insert record ke tb_pks
+                           +---> Response HTTP 201 Created & Notifikasi Sukses
+
+============================================================================
+3. FLOWCHART 2: LOGIKA PENENTUAN STATUS & PERINGATAN H-BULAN
+============================================================================
+
+Saat mengambil data PKS atau menghitung statistik dashboard:
+
+                   +-----------------------------+
+                   |  Pemeriksaan Status PKS     |
+                   +-----------------------------+
+                                  |
+                                  v
+                  Apakah status_perpanjangan ==
+                 'Jangka Waktu Tidak Ditentukan'
+                   atau tanggal_berakhir == NULL?
+                               /      \
+                             (Ya)     (Tidak)
+                             /          \
+                            v            v
+                 +---------------+  Hitung: Hari Tersisa (diffDays)
+                 | Status:       |  diffDays = (tanggal_berakhir - hari_ini)
+                 | AKTIF         |
+                 +---------------+
+                                                 |
+                                                 v
+                                           Apakah diffDays < 0?
+                                              /       \
+                                            (Ya)      (Tidak)
+                                            /           \
+                                           v             v
+                                   +---------------+  Periksa Aturan Peringatan:
+                                   | Status:       |  - Jika 'Peringatan H-Bulan':
+                                   | BERAKHIR /    |    threshold = (peringatan_bulan * 30 hari)
+                                   | KADALUARSA    |  - Selain itu:
+                                   +---------------+    threshold = 30 hari
+                                                                 |
+                                                                 v
+                                                       Apakah diffDays <= threshold?
+                                                           /       \
+                                                         (Ya)      (Tidak)
+                                                         /           \
+                                                        v             v
+                                             +-----------------+ +---------------+
+                                             | Status:         | | Status:       |
+                                             | SEGERA BERAKHIR | | AKTIF         |
+                                             +-----------------+ +---------------+
+
+============================================================================
+4. FLOWCHART 3: PERHITUNGAN "TOTAL KERJA SAMA PERUSAHAAN"
+============================================================================
+
+Aturan Bisnis:
+1. Tidak menghitung dokumen yang merupakan addendum atau amandemen.
+2. Menghitung jumlah unik entitas rekanan / induk PKS terdaftar.
+
+Algoritma Backend (SQL / Query):
+
+SELECT COUNT(DISTINCT LOWER(TRIM(nama_perusahaan))) AS total_perusahaan
+FROM tb_pks
+WHERE 
+  LOWER(judul_pks) NOT LIKE '%addendum%' 
+  AND LOWER(judul_pks) NOT LIKE '%amandemen%'
+  AND LOWER(nomor_pks) NOT LIKE '%addendum%'
+  AND LOWER(nomor_pks) NOT LIKE '%amandemen%'
+  AND LOWER(nomor_pks) NOT LIKE '%add.%'
+  AND LOWER(nomor_pks) NOT LIKE '%amd.%';
+
+Tampilan Hasil di UI:
+[Total Angka]
+Perusahaan
+
+============================================================================
+5. FLOWCHART 4: PENCATATAN ADDENDUM / AMANDEMEN / PERPANJANGAN
+============================================================================
+
+   +------------------------------------+
+   | User Buka Detail PKS -> Klik Aksi  |
+   +------------------------------------+
+                     |
+                     v
+   +------------------------------------+
+   | Pilih Tipe Aksi:                   |
+   | - Addendum                         |
+   | - Amandemen                        |
+   | - Perpanjangan Masa Berlaku        |
+   +------------------------------------+
+                     |
+                     v
+   +------------------------------------+
+   | Isi Form:                          |
+   | - Nomor Dokumen Baru               |
+   | - Tanggal Efektif                  |
+   | - Tanggal Berakhir Baru (Jika ada) |
+   | - Pokok Perubahan & Deskripsi      |
+   | - Upload Lampiran Berkas           |
+   | - Kontak PIC Baru (Opsional)       |
+   +------------------------------------+
+                     |
+                     v
+   +------------------------------------+
+   | Simpan ke Backend:                 |
+   | 1. Simpan baris baru ke tabel      |
+   |    tb_pks_riwayat                  |
+   | 2. Jika aksi perpanjangan masa     |
+   |    berlaku, update kolom           |
+   |    tb_pks.tanggal_berakhir         |
+   +------------------------------------+
+                     |
+                     v
+   +------------------------------------+
+   | Kembalikan Data Terupdate ke Klien |
+   +------------------------------------+
+
+============================================================================
+6. DIAGRAM MERMAID (SIAP COPY KE MERMAID LIVE EDITOR / GITHUB MARKDOWN)
+============================================================================
+
+```mermaid
+graph TD
+    A[Mulai] --> B[Input Data PKS]
+    B --> C{Pilih Status Perpanjangan}
+    C -->|Peringatan H-Bulan| D[Input Peringatan Bulan 1-6]
+    C -->|Lainnya| E{Ketersediaan Berkas}
+    D --> E
+    E -->|Ada Soft File| F[Upload PDF/Docx]
+    E -->|Hard File| G[Input Lokasi Arsip Fisik]
+    E -->|Tidak Ada| H[Input Catatan Follow Up]
+    F --> I[Pilih Saluran PIC WhatsApp/Kantor]
+    G --> I
+    H --> I
+    I --> J[Submit ke API POST /api/pks]
+    J --> K{Validasi Backend}
+    K -->|Gagal| L[Error Response]
+    K -->|Berhasil| M[Simpan File ke Storage]
+    M --> N[Insert Data ke Database tb_pks]
+    N --> O[Selesai - Status 201 Created]
+```
+
+============================================================================
+7. SPESIFIKASI REST API ENDPOINTS
+============================================================================
+
+1. GET /api/pks
+   - Deskripsi: Mengambil seluruh daftar PKS beserta riwayatnya.
+   - Query Params: ?search=...&status=aktif|segera_berakhir|berakhir&bidang=...
+   - Response:
+     {
+       "success": true,
+       "total": 5,
+       "data": [ ... array of PKS ... ]
+     }
+
+2. GET /api/pks/:id
+   - Deskripsi: Mengambil detail satu PKS lengkap beserta relasi tb_pks_riwayat.
+   - Response:
+     {
+       "success": true,
+       "data": {
+         "id": 1,
+         "nomor_pks": "018/PKS-RSIA-BAS/DIR/I/2026",
+         "nama_perusahaan": "PT Asuransi Allianz Life Indonesia",
+         ...
+         "riwayat": [ ... ]
+       }
+     }
+
+3. POST /api/pks
+   - Deskripsi: Menambahkan data PKS baru.
+   - Content-Type: multipart/form-data
+   - Body: nomor_pks, nama_perusahaan, judul_pks, tanggal_berlaku, tanggal_berakhir,
+           status_perpanjangan, peringatan_bulan, tipe_dokumen, file (binary),
+           lokasi_arsip_fisik, catatan_follow_up, pic_nama, tipe_kontak, pic_kontak, pic_jabatan
+   - Response: 201 Created
+
+4. PUT /api/pks/:id
+   - Deskripsi: Mengubah data induk PKS.
+   - Content-Type: application/json atau multipart/form-data
+
+5. DELETE /api/pks/:id
+   - Deskripsi: Menghapus data PKS (otomatis menghapus riwayat karena cascade).
+
+6. POST /api/pks/:id/riwayat
+   - Deskripsi: Menambahkan Addendum, Amandemen, atau Perpanjangan.
+   - Content-Type: multipart/form-data
+   - Body: tipe_aksi, nomor_dokumen, tanggal_efektif, tanggal_berakhir_baru, perihal,
+           deskripsi, file (binary), pic_nama, tipe_kontak, pic_kontak, pic_jabatan
+
+7. GET /api/stats/dashboard
+   - Deskripsi: Mengambil statistik ringkas untuk halaman depan (Cover) dan dashboard:
+   - Response:
+     {
+       "total_perusahaan": 5,
+       "total_pks": 5,
+       "aktif": 4,
+       "segera_berakhir": 1,
+       "berakhir": 0
+     }
+
+============================================================================
+8. PANDUAN PENYIMPANAN BERKAS (FILE UPLOAD)
+============================================================================
+1. Format Berkas yang Diizinkan:
+   - PDF (.pdf)
+   - Microsoft Word (.doc, .docx)
+2. Batas Ukuran Berkas: Maksimal 15 MB per dokumen.
+3. Struktur Penamaan File di Server:
+   Format: PKS_[ID_OR_TIMESTAMP]_[NAMA_ASLI_BERSIH].pdf
+   Contoh: PKS_20260928_Allianz_PKS_Induk.pdf
+4. Keamanan:
+   - Simpan berkas di direktori private atau gunakan middleware token/otorisasi
+     jika dokumen PKS bersifat rahasia (confidential).
+
+============================================================================
+9. BACKGROUND CRON JOB (AUTOMATED REMINDER)
+============================================================================
+Buat script Cron Job harian (dijalankan setiap pukul 07:00 WIB):
+1. Query seluruh PKS yang statusnya mendekati jatuh tempo (diffDays <= threshold).
+2. Kirim notifikasi WhatsApp atau Email otomatis ke Humas & Marketing RSIA Bunda Asy-Syifa:
+   "Pemberitahuan: PKS [Nama Perusahaan] No: [Nomor PKS] akan berakhir dalam [N] hari.
+   Segera lakukan koordinasi perpanjangan atau surat konfirmasi tertulis."
